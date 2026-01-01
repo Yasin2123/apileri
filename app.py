@@ -1,17 +1,17 @@
 from flask import Flask, request, jsonify
 import psycopg2
+import os
 import uuid
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-# 🔴 DB LINKINI DİREKT YAZIYORUZ
-DATABASE_URL = "postgresql://panel_db_2dej_user:tb4K8BS1SGkX3tTO8ozUO8N7lVGswt0O@dpg-d5b1g38gjchc73bk7rd0-a/panel_db_2dej"
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def db():
     return psycopg2.connect(DATABASE_URL)
 
-# ---------------- DB KUR ----------------
+# TABLO
 def db_kur():
     with db() as con:
         with con.cursor() as cur:
@@ -19,7 +19,7 @@ def db_kur():
             CREATE TABLE IF NOT EXISTS keys (
                 id SERIAL PRIMARY KEY,
                 key TEXT UNIQUE,
-                tip TEXT,
+                tur TEXT,
                 bitis TIMESTAMP
             )
             """)
@@ -27,75 +27,99 @@ def db_kur():
 
 db_kur()
 
-# ---------------- FREE SABİT ----------------
-@app.route("/free")
-def free():
-    return jsonify({"durum": "ok", "tip": "free"})
-
-# ---------------- KEY EKLE ----------------
-@app.route("/key/ekle", methods=["POST"])
-def key_ekle():
-    data = request.json
-    tip = data.get("tip")  # vip / admin
-    sure = data.get("sure")  # gunluk / haftalik / aylik / yillik / sinirsiz
-
+# SÜRE HESAPLAMA
+def sure_hesapla(tur):
     now = datetime.now()
-    if sure == "gunluk":
-        bitis = now + timedelta(days=1)
-    elif sure == "haftalik":
-        bitis = now + timedelta(days=7)
-    elif sure == "aylik":
-        bitis = now + timedelta(days=30)
-    elif sure == "yillik":
-        bitis = now + timedelta(days=365)
-    elif sure == "sinirsiz":
-        bitis = None
-    else:
-        return jsonify({"hata": "sure gecersiz"})
+    if tur.endswith("_gunluk"):
+        return now + timedelta(days=1)
+    if tur.endswith("_haftalik"):
+        return now + timedelta(weeks=1)
+    if tur.endswith("_aylik"):
+        return now + timedelta(days=30)
+    if tur.endswith("_yillik"):
+        return now + timedelta(days=365)
+    if tur.endswith("_sinirsiz"):
+        return None
+    return None
 
+# KEY OLUŞTUR (URL'DEN TÜR)
+@app.route("/key/olustur/<tur>")
+def key_olustur(tur):
     key = uuid.uuid4().hex.upper()
+    bitis = sure_hesapla(tur)
 
     with db() as con:
         with con.cursor() as cur:
             cur.execute(
-                "INSERT INTO keys (key, tip, bitis) VALUES (%s,%s,%s)",
-                (key, tip, bitis)
+                "INSERT INTO keys (key, tur, bitis) VALUES (%s,%s,%s)",
+                (key, tur, bitis)
             )
             con.commit()
 
-    return jsonify({"key": key, "tip": tip, "sure": sure})
+    return jsonify({
+        "key": key,
+        "tur": tur,
+        "bitis": bitis.isoformat() if bitis else "sinirsiz"
+    })
 
-# ---------------- KEY KONTROL ----------------
+# KEY KONTROL
 @app.route("/key/kontrol")
 def key_kontrol():
     key = request.args.get("key")
 
     with db() as con:
         with con.cursor() as cur:
-            cur.execute("SELECT tip, bitis FROM keys WHERE key=%s", (key,))
+            cur.execute(
+                "SELECT tur, bitis FROM keys WHERE key=%s",
+                (key,)
+            )
             row = cur.fetchone()
 
     if not row:
         return jsonify({"gecerli": False})
 
-    tip, bitis = row
-    if bitis and bitis < datetime.now():
-        return jsonify({"gecerli": False, "mesaj": "suresi dolmus"})
+    tur, bitis = row
 
-    return jsonify({"gecerli": True, "tip": tip})
+    if bitis and datetime.now() > bitis:
+        return jsonify({"gecerli": False, "sebep": "suresi_bitti"})
 
-# ---------------- KEY SİL ----------------
-@app.route("/key/sil", methods=["POST"])
+    return jsonify({
+        "gecerli": True,
+        "tur": tur,
+        "bitis": bitis.isoformat() if bitis else "sinirsiz"
+    })
+
+# KEY SİL
+@app.route("/key/sil")
 def key_sil():
-    key = request.json.get("key")
+    key = request.args.get("key")
 
     with db() as con:
         with con.cursor() as cur:
             cur.execute("DELETE FROM keys WHERE key=%s", (key,))
+            if cur.rowcount == 0:
+                return jsonify({"durum": "yok"})
             con.commit()
 
     return jsonify({"durum": "silindi"})
 
-# ---------------- RUN ----------------
+# KEY LİSTELE
+@app.route("/key/liste")
+def key_liste():
+    with db() as con:
+        with con.cursor() as cur:
+            cur.execute("SELECT key, tur, bitis FROM keys ORDER BY id DESC")
+            rows = cur.fetchall()
+
+    liste = []
+    for k, t, b in rows:
+        liste.append({
+            "key": k,
+            "tur": t,
+            "bitis": b.isoformat() if b else "sinirsiz"
+        })
+
+    return jsonify(liste)
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)

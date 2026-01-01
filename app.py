@@ -1,119 +1,108 @@
 from flask import Flask, jsonify, request
 import psycopg2
-import os
 import uuid
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+DATABASE_URL = "postgresql://postgres:yasinlezoryarisirlar@db.mfesozvasdkjrgxexeev.supabase.co:5432/postgres"
 
 def db():
     return psycopg2.connect(DATABASE_URL)
 
-# TABLO
+# ---- TABLO ----
 def db_kur():
     with db() as con:
-        with con.cursor() as cur:
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS keys (
-                id SERIAL PRIMARY KEY,
-                key TEXT UNIQUE NOT NULL,
-                tur TEXT,
-                bitis TIMESTAMP,
-                olusturma TIMESTAMP
-            )
-            """)
-            con.commit()
+        cur = con.cursor()
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS keys (
+            id SERIAL PRIMARY KEY,
+            key TEXT UNIQUE,
+            rol TEXT,
+            bitis TIMESTAMP
+        )
+        """)
+        con.commit()
 
 db_kur()
 
-# SÜRE HESABI
-def bitis_hesapla(tur):
-    now = datetime.now()
-    if tur == "admin_gunluk":
+# ---- SÜRE HESABI ----
+def sure_hesapla(tip):
+    now = datetime.utcnow()
+    if tip == "gunluk":
         return now + timedelta(days=1)
-    if tur == "admin_haftalik":
+    if tip == "haftalik":
         return now + timedelta(weeks=1)
-    if tur == "admin_aylik":
+    if tip == "aylik":
         return now + timedelta(days=30)
-    if tur == "admin_yillik":
+    if tip == "yillik":
         return now + timedelta(days=365)
-    if tur == "admin_sinirsiz":
+    if tip == "sinirsiz":
         return None
     return None
 
-# KEY OLUŞTUR
-@app.route("/key/olustur/<tur>")
-def key_olustur(tur):
+# ---- KEY OLUŞTUR ----
+@app.route("/key/olustur/<rol>_<sure>")
+def key_olustur(rol, sure):
     key = uuid.uuid4().hex.upper()
-    bitis = bitis_hesapla(tur)
+    bitis = sure_hesapla(sure)
 
     with db() as con:
-        with con.cursor() as cur:
-            cur.execute(
-                "INSERT INTO keys (key, tur, bitis, olusturma) VALUES (%s,%s,%s,%s)",
-                (key, tur, bitis, datetime.now())
-            )
-            con.commit()
+        cur = con.cursor()
+        cur.execute(
+            "INSERT INTO keys (key, rol, bitis) VALUES (%s,%s,%s)",
+            (key, rol, bitis)
+        )
+        con.commit()
 
     return jsonify({
-        "durum": "ok",
         "key": key,
-        "tur": tur,
-        "bitis": str(bitis) if bitis else "sinirsiz"
+        "rol": rol,
+        "sure": sure
     })
 
-# KEY KONTROL
+# ---- KEY KONTROL ----
 @app.route("/key/kontrol")
 def key_kontrol():
     key = request.args.get("key")
 
     with db() as con:
-        with con.cursor() as cur:
-            cur.execute(
-                "SELECT tur, bitis FROM keys WHERE key=%s",
-                (key,)
-            )
-            row = cur.fetchone()
+        cur = con.cursor()
+        cur.execute("SELECT rol, bitis FROM keys WHERE key=%s", (key,))
+        row = cur.fetchone()
 
     if not row:
         return jsonify({"gecerli": False})
 
-    tur, bitis = row
-    if bitis and datetime.now() > bitis:
-        return jsonify({"gecerli": False, "sebep": "sure_bitti"})
+    rol, bitis = row
+    if bitis and datetime.utcnow() > bitis:
+        return jsonify({"gecerli": False, "mesaj": "suresi doldu"})
 
-    return jsonify({"gecerli": True, "tur": tur})
+    return jsonify({"gecerli": True, "rol": rol})
 
-# KEY SİL
+# ---- KEY SİL ----
 @app.route("/key/sil")
 def key_sil():
     key = request.args.get("key")
 
     with db() as con:
-        with con.cursor() as cur:
-            cur.execute("DELETE FROM keys WHERE key=%s", (key,))
-            if cur.rowcount == 0:
-                return jsonify({"durum": "yok"})
-            con.commit()
+        cur = con.cursor()
+        cur.execute("DELETE FROM keys WHERE key=%s", (key,))
+        con.commit()
 
-    return jsonify({"durum": "silindi"})
+    return jsonify({"silindi": True})
 
-# KEY LİSTELE
+# ---- KEY LİSTE ----
 @app.route("/key/liste")
 def key_liste():
     with db() as con:
-        with con.cursor() as cur:
-            cur.execute("SELECT key, tur, bitis FROM keys")
-            rows = cur.fetchall()
+        cur = con.cursor()
+        cur.execute("SELECT key, rol, bitis FROM keys")
+        rows = cur.fetchall()
 
     return jsonify([
-        {
-            "key": r[0],
-            "tur": r[1],
-            "bitis": str(r[2]) if r[2] else "sinirsiz"
-        } for r in rows
+        {"key": k, "rol": r, "bitis": str(b)}
+        for k, r, b in rows
     ])
 
 if __name__ == "__main__":
